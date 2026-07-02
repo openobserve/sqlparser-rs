@@ -16,7 +16,7 @@
 // under the License.
 
 use criterion::{criterion_group, criterion_main, Criterion};
-use sqlparser::dialect::GenericDialect;
+use sqlparser::dialect::{GenericDialect, PostgreSqlDialect};
 use sqlparser::keywords::Keyword;
 use sqlparser::parser::Parser;
 use sqlparser::tokenizer::{Span, Word};
@@ -152,5 +152,35 @@ fn parse_many_identifiers(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, basic_queries, word_to_ident, parse_many_identifiers);
+/// Benchmark parsing pathological `lower(lower(lower(...` chains that
+/// previously caused 2^N work in `parse_function_args` on dialects with
+/// expression-named function arguments (the argument expression was parsed
+/// once to detect the named form, then re-parsed on the unnamed path).
+fn parse_function_arg_call_chain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse_function_arg_call_chain");
+    let dialect = PostgreSqlDialect {};
+
+    for &n in &[10usize, 20, 30] {
+        let sql = String::from("SELECT ") + &"lower(".repeat(n) + "x" + &")".repeat(n);
+
+        group.bench_function(format!("chain_{n}"), |b| {
+            b.iter(|| {
+                let _ = Parser::new(&dialect)
+                    .with_recursion_limit(256)
+                    .try_with_sql(std::hint::black_box(&sql))
+                    .and_then(|mut p| p.parse_statements());
+            });
+        });
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    basic_queries,
+    word_to_ident,
+    parse_many_identifiers,
+    parse_function_arg_call_chain
+);
 criterion_main!(benches);
